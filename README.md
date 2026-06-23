@@ -79,7 +79,7 @@ The default dictionary folder is:
 data/
 ```
 
-Every `.pqb` in that folder is queried. Results with the same word and pronunciation are merged into one table row. The Chinese-English dictionary is shown in the English column, and the Chinese-Vietnamese dictionary is shown in the Vietnamese column.
+Every `.pqb` in that folder is queried. Matching rows are converted into a Chinese headword + pronunciation key, then the app fetches the matching records from the other dictionaries. In practice, the Chinese-English dictionary acts like the base table and the Chinese-Vietnamese dictionary is joined onto it when the key matches.
 
 The table displays:
 

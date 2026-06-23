@@ -44,12 +44,32 @@ def clean_pleco_text(value: object) -> str:
     return text.strip()
 
 
+def row_merge_key(row: sqlite3.Row) -> tuple[str, str]:
+    word = clean_pleco_text(row["word"]) or clean_pleco_text(row["altword"])
+    pron = clean_pleco_text(row["pron"])
+    return word, pron
+
+
+def row_merge_keys(row: sqlite3.Row) -> list[tuple[str, str]]:
+    pron = clean_pleco_text(row["pron"])
+    keys = {
+        (word, pron)
+        for word in [clean_pleco_text(row["word"]), clean_pleco_text(row["altword"])]
+        if word and pron
+    }
+    primary_key = row_merge_key(row)
+    if primary_key[0] and primary_key[1]:
+        keys.add(primary_key)
+    return sorted(keys)
+
+
 @dataclass
 class SourceDatabase:
     path: Path
     connection: sqlite3.Connection
     name: str
     language: str
+    key_index: dict[tuple[str, str], list[int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,8 +124,10 @@ class DictionaryStore:
             connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             connection.row_factory = sqlite3.Row
             name = self.source_name(connection, db_path)
+            source = SourceDatabase(db_path, connection, name, self.source_language(name, db_path))
+            source.key_index = self.build_key_index(source)
             self.sources.append(
-                SourceDatabase(db_path, connection, name, self.source_language(name, db_path))
+                source
             )
 
     def close(self) -> None:
@@ -147,6 +169,16 @@ class DictionaryStore:
             )
             for source in self.sources
         )
+
+    def build_key_index(self, source: SourceDatabase) -> dict[tuple[str, str], list[int]]:
+        index: dict[tuple[str, str], list[int]] = {}
+        rows = source.connection.execute(
+            "SELECT uid, word, altword, pron FROM pleco_dict_entries"
+        )
+        for row in rows:
+            for key in row_merge_keys(row):
+                index.setdefault(key, []).append(int(row["uid"]))
+        return index
 
     def query_variants(self, query: str) -> list[str]:
         terms = {query.strip()}
@@ -198,34 +230,69 @@ class DictionaryStore:
         if not variants:
             return []
 
-        merged: dict[tuple[str, str], MergedEntry] = {}
+        ranked_keys: dict[tuple[str, str], int] = {}
         source_limit = max(self.limit * 2, self.limit + 50)
 
         for source in self.sources:
             for row in self.search_source(source, variants, source_limit):
+                rank = self.rank_row(row, variants)
+                for key in row_merge_keys(row):
+                    ranked_keys[key] = min(rank, ranked_keys.get(key, rank))
+
+        entries = [
+            self.join_entry(key, rank)
+            for key, rank in ranked_keys.items()
+            if key[0] and key[1]
+        ]
+
+        return sorted(
+            entries,
+            key=lambda entry: (entry.rank, len(entry.word), entry.word, entry.pron),
+        )[: self.limit]
+
+    def join_entry(self, key: tuple[str, str], rank: int) -> MergedEntry:
+        key_word, key_pron = key
+        entry = MergedEntry(word=key_word, altword="", pron=key_pron, rank=rank)
+        preferred_word_set = False
+
+        for source in sorted(self.sources, key=lambda item: item.language != "english"):
+            for row in self.rows_for_key(source, key):
                 word = clean_pleco_text(row["word"])
                 altword = clean_pleco_text(row["altword"])
                 pron = clean_pleco_text(row["pron"])
-                definition = clean_pleco_text(row["defn"])
-                key = (word or altword, pron)
-                rank = self.rank_row(row, variants)
 
-                entry = merged.get(key)
-                if entry is None:
-                    entry = MergedEntry(word=word, altword=altword, pron=pron, rank=rank)
-                    merged[key] = entry
-                entry.rank = min(entry.rank, rank)
-                self.add_definition(entry, source, definition)
+                if not preferred_word_set and source.language == "english":
+                    entry.word = word or entry.word
+                    entry.altword = altword
+                    entry.pron = pron or entry.pron
+                    preferred_word_set = True
+                elif not entry.altword and altword:
+                    entry.altword = altword
+
+                self.add_definition(entry, source, clean_pleco_text(row["defn"]))
                 if source.name not in entry.sources:
                     entry.sources.append(source.name)
                 uid = f"{source.name}:{row['uid']}"
                 if uid not in entry.uids:
                     entry.uids.append(uid)
 
-        return sorted(
-            merged.values(),
-            key=lambda entry: (entry.rank, len(entry.word), entry.word, entry.pron),
-        )[: self.limit]
+        return entry
+
+    def rows_for_key(self, source: SourceDatabase, key: tuple[str, str]) -> list[sqlite3.Row]:
+        uids = source.key_index.get(key, [])
+        if not uids:
+            return []
+        placeholders = ",".join("?" for _ in uids)
+        rows = source.connection.execute(
+            f"""
+            SELECT uid, word, altword, pron, defn
+            FROM pleco_dict_entries
+            WHERE uid IN ({placeholders})
+            ORDER BY uid
+            """,
+            uids,
+        ).fetchall()
+        return [row for row in rows if key in row_merge_keys(row)]
 
     def add_definition(
         self, entry: MergedEntry, source: SourceDatabase, definition: str

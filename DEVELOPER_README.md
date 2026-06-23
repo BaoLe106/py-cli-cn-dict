@@ -47,7 +47,7 @@ pyproject.toml
 uv.lock
 ```
 
-`myclidict.py` contains the Textual app and the read-only SQLite search adapter. By default it opens every `.pqb` file in `data/`, searches them all, and merges matching rows by cleaned `word + pronunciation`. OVD/Vietnamese sources populate the Vietnamese column; CD-Dict/English sources populate the English column; unknown sources populate Other.
+`myclidict.py` contains the Textual app and the read-only SQLite search adapter. By default it opens every `.pqb` file in `data/`, searches them all, then hydrates each matching cleaned `word + pronunciation` key from the other dictionaries. This behaves like a left join of Vietnamese data onto the Chinese-English records while still allowing Vietnamese search terms to find the joined row. OVD/Vietnamese sources populate the Vietnamese column; CD-Dict/English sources populate the English column; unknown sources populate Other.
 
 `data/Pleco_OVD-Dict.pqb` is the default dictionary file committed with the project. Additional local `.pqb` files can be added to `data/` and will automatically be included by the TUI.
 
