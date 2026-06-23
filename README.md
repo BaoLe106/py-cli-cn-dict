@@ -1,8 +1,8 @@
 # py-cli-cn-dict
 
-A terminal UI for searching a Pleco Chinese-Vietnamese `.pqb` dictionary.
+A terminal UI for searching Pleco `.pqb` dictionaries.
 
-The app uses Textual and searches `data/Pleco_OVD-Dict.pqb` by default. You can type Chinese traditional or simplified characters, pinyin, English, or Vietnamese, and matching entries appear in a table.
+The app uses Textual and searches every `.pqb` file in `data/` by default. You can type Chinese traditional or simplified characters, pinyin, English, or Vietnamese, and matching entries appear in one merged table.
 
 ## Structure
 
@@ -10,6 +10,7 @@ The app uses Textual and searches `data/Pleco_OVD-Dict.pqb` by default. You can 
 myclidict.py
 data/
   Pleco_OVD-Dict.pqb
+  other-dictionaries.pqb
 ```
 
 ## Install
@@ -40,10 +41,17 @@ Or run the file directly:
 uv run python myclidict.py
 ```
 
-Use another `.pqb` file:
+Use a different folder of `.pqb` files:
+
+```sh
+uv run myclidict --data-dir path/to/dictionaries
+```
+
+Use one or more specific `.pqb` files:
 
 ```sh
 uv run myclidict --db path/to/dictionary.pqb
+uv run myclidict --db dict-a.pqb --db dict-b.pqb
 ```
 
 Limit the number of visible results:
@@ -65,20 +73,23 @@ Ctrl+C   quit
 
 ## Data
 
-The default dictionary file is:
+The default dictionary folder is:
 
 ```text
-data/Pleco_OVD-Dict.pqb
+data/
 ```
+
+Every `.pqb` in that folder is queried. Results with the same word and pronunciation are merged into one table row, with definitions grouped by source dictionary.
 
 The table displays:
 
 ```text
-UID
 Word
 Alt Word
 Pronunciation
-Definition
+Definitions
+Sources
+UIDs
 ```
 
 Traditional and simplified Chinese input are both supported through OpenCC conversion.

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -21,7 +22,7 @@ except ImportError:  # pragma: no cover - dependency is declared for app install
     OpenCC = None
 
 
-DEFAULT_DB = Path(__file__).with_name("data") / "Pleco_OVD-Dict.pqb"
+DEFAULT_DATA_DIR = Path(__file__).with_name("data")
 DEFAULT_LIMIT = 200
 PLECO_MARKERS = {
     "@": "",
@@ -43,31 +44,86 @@ def clean_pleco_text(value: object) -> str:
     return text.strip()
 
 
-class DictionaryStore:
-    """Read-only search adapter for a Pleco SQLite dictionary."""
+@dataclass
+class SourceDatabase:
+    path: Path
+    connection: sqlite3.Connection
+    name: str
 
-    def __init__(self, db_path: Path, limit: int = DEFAULT_LIMIT) -> None:
-        self.db_path = db_path
+
+@dataclass
+class MergedEntry:
+    word: str
+    altword: str
+    pron: str
+    definitions: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+    uids: list[str] = field(default_factory=list)
+    rank: int = 3
+
+    @property
+    def definition_text(self) -> str:
+        return "\n\n".join(self.definitions)
+
+    @property
+    def source_text(self) -> str:
+        return ", ".join(self.sources)
+
+    @property
+    def uid_text(self) -> str:
+        return ", ".join(self.uids)
+
+
+class DictionaryStore:
+    """Read-only search adapter that merges results from many Pleco dictionaries."""
+
+    def __init__(self, db_paths: list[Path], limit: int = DEFAULT_LIMIT) -> None:
+        self.db_paths = db_paths
         self.limit = limit
-        self.connection: sqlite3.Connection | None = None
+        self.sources: list[SourceDatabase] = []
         self.s2t = OpenCC("s2t") if OpenCC else None
         self.t2s = OpenCC("t2s") if OpenCC else None
 
     def open(self) -> None:
-        if not self.db_path.exists():
-            raise FileNotFoundError(f"Dictionary not found: {self.db_path}")
-        self.connection = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        self.connection.row_factory = sqlite3.Row
+        if not self.db_paths:
+            raise FileNotFoundError("No .pqb dictionaries found.")
+        for db_path in self.db_paths:
+            if not db_path.exists():
+                raise FileNotFoundError(f"Dictionary not found: {db_path}")
+            connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            self.sources.append(SourceDatabase(db_path, connection, self.source_name(connection, db_path)))
 
     def close(self) -> None:
-        if self.connection is not None:
-            self.connection.close()
-            self.connection = None
+        for source in self.sources:
+            source.connection.close()
+        self.sources.clear()
+
+    def source_name(self, connection: sqlite3.Connection, db_path: Path) -> str:
+        row = connection.execute(
+            """
+            SELECT propvalue
+            FROM pleco_dict_properties
+            WHERE propid IN ('DictShortName', 'DictMenuName', 'DictName')
+            ORDER BY
+                CASE propid
+                    WHEN 'DictShortName' THEN 0
+                    WHEN 'DictMenuName' THEN 1
+                    ELSE 2
+                END
+            LIMIT 1
+            """
+        ).fetchone()
+        return clean_pleco_text(row["propvalue"]) if row else db_path.stem
 
     def count_entries(self) -> int:
-        assert self.connection is not None
-        return int(
-            self.connection.execute("SELECT COUNT(*) FROM pleco_dict_entries").fetchone()[0]
+        return sum(
+            int(
+                source.connection.execute(
+                    "SELECT COUNT(*) FROM pleco_dict_entries"
+                ).fetchone()[0]
+            )
+            for source in self.sources
         )
 
     def query_variants(self, query: str) -> list[str]:
@@ -77,12 +133,9 @@ class DictionaryStore:
             terms.add(self.t2s.convert(query).strip())
         return sorted(term for term in terms if term)
 
-    def search(self, query: str) -> list[sqlite3.Row]:
-        assert self.connection is not None
-        variants = self.query_variants(query)
-        if not variants:
-            return []
-
+    def search_source(
+        self, source: SourceDatabase, variants: list[str], source_limit: int
+    ) -> list[sqlite3.Row]:
         params: list[str | int] = []
         clauses: list[str] = []
         for variant in variants:
@@ -98,7 +151,7 @@ class DictionaryStore:
                 """
             )
             params.extend([exact, exact, exact, like, like, like, like])
-        params.append(self.limit)
+        params.append(source_limit)
 
         sql = f"""
             SELECT uid, word, altword, pron, defn
@@ -116,7 +169,54 @@ class DictionaryStore:
             LIMIT ?
         """
         params[-1:-1] = variants + variants + variants
-        return list(self.connection.execute(sql, params))
+        return list(source.connection.execute(sql, params))
+
+    def search(self, query: str) -> list[MergedEntry]:
+        variants = self.query_variants(query)
+        if not variants:
+            return []
+
+        merged: dict[tuple[str, str], MergedEntry] = {}
+        source_limit = max(self.limit * 2, self.limit + 50)
+
+        for source in self.sources:
+            for row in self.search_source(source, variants, source_limit):
+                word = clean_pleco_text(row["word"])
+                altword = clean_pleco_text(row["altword"])
+                pron = clean_pleco_text(row["pron"])
+                definition = clean_pleco_text(row["defn"])
+                key = (word or altword, pron)
+                rank = self.rank_row(row, variants)
+
+                entry = merged.get(key)
+                if entry is None:
+                    entry = MergedEntry(word=word, altword=altword, pron=pron, rank=rank)
+                    merged[key] = entry
+                entry.rank = min(entry.rank, rank)
+                if definition and definition not in entry.definitions:
+                    entry.definitions.append(f"[{source.name}] {definition}")
+                if source.name not in entry.sources:
+                    entry.sources.append(source.name)
+                uid = f"{source.name}:{row['uid']}"
+                if uid not in entry.uids:
+                    entry.uids.append(uid)
+
+        return sorted(
+            merged.values(),
+            key=lambda entry: (entry.rank, len(entry.word), entry.word, entry.pron),
+        )[: self.limit]
+
+    def rank_row(self, row: sqlite3.Row, variants: list[str]) -> int:
+        word = row["word"] or ""
+        altword = row["altword"] or ""
+        pron = row["pron"] or ""
+        if word in variants:
+            return 0
+        if altword in variants:
+            return 1
+        if pron in variants:
+            return 2
+        return 3
 
 
 class DictSearchApp(App[None]):
@@ -168,10 +268,10 @@ class DictSearchApp(App[None]):
     def on_mount(self) -> None:
         self.store.open()
         table = self.query_one(DataTable)
-        table.add_columns("UID", "Word", "Alt Word", "Pronunciation", "Definition")
+        table.add_columns("Word", "Alt Word", "Pronunciation", "Definitions", "Sources", "UIDs")
         count = self.store.count_entries()
         self.query_one("#status", Static).update(
-            f"Ready. {count:,} entries loaded from {self.store.db_path}."
+            f"Ready. {count:,} entries loaded from {len(self.store.sources)} dictionaries."
         )
         self.query_one(Input).focus()
 
@@ -200,12 +300,13 @@ class DictSearchApp(App[None]):
         rows = self.store.search(self.query)
         for row in rows:
             table.add_row(
-                str(row["uid"]),
-                clean_pleco_text(row["word"]),
-                clean_pleco_text(row["altword"]),
-                clean_pleco_text(row["pron"]),
-                clean_pleco_text(row["defn"]),
-                key=str(row["uid"]),
+                row.word,
+                row.altword,
+                row.pron,
+                row.definition_text,
+                row.source_text,
+                row.uid_text,
+                key=f"{row.word}:{row.pron}",
             )
 
         suffix = f" Showing first {self.store.limit:,}." if len(rows) == self.store.limit else ""
@@ -220,12 +321,19 @@ def positive_int(value: str) -> int:
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Search a Pleco .pqb dictionary in a TUI.")
+    parser = argparse.ArgumentParser(description="Search merged Pleco .pqb dictionaries in a TUI.")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=DEFAULT_DATA_DIR,
+        help=f"Folder containing .pqb files. Default: {DEFAULT_DATA_DIR}",
+    )
     parser.add_argument(
         "--db",
+        action="append",
         type=Path,
-        default=DEFAULT_DB,
-        help=f"Path to a Pleco .pqb SQLite file. Default: {DEFAULT_DB}",
+        default=None,
+        help="Specific .pqb file to search. Can be passed more than once.",
     )
     parser.add_argument(
         "--limit",
@@ -236,9 +344,15 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def discover_db_paths(args: argparse.Namespace) -> list[Path]:
+    if args.db:
+        return sorted(dict.fromkeys(path.resolve() for path in args.db))
+    return sorted(args.data_dir.glob("*.pqb"))
+
+
 def main(argv: Iterable[str] | None = None) -> None:
     args = parse_args(argv)
-    app = DictSearchApp(DictionaryStore(args.db, args.limit))
+    app = DictSearchApp(DictionaryStore(discover_db_paths(args), args.limit))
     app.run()
 
 

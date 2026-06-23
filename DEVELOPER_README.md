@@ -1,6 +1,6 @@
 # Developer Guide
 
-This project is a small Python Textual TUI that searches a Pleco `.pqb` SQLite dictionary.
+This project is a small Python Textual TUI that searches and merges Pleco `.pqb` SQLite dictionaries.
 
 ## Requirements
 
@@ -40,15 +40,16 @@ uv run ruff check .
 myclidict.py
 data/
   Pleco_OVD-Dict.pqb
+  other-dictionaries.pqb
 README.md
 DEVELOPER_README.md
 pyproject.toml
 uv.lock
 ```
 
-`myclidict.py` contains the Textual app and the read-only SQLite search adapter.
+`myclidict.py` contains the Textual app and the read-only SQLite search adapter. By default it opens every `.pqb` file in `data/`, searches them all, and merges matching rows by cleaned `word + pronunciation`.
 
-`data/Pleco_OVD-Dict.pqb` is the default dictionary file used by the TUI. The app can search Chinese, pinyin, English, and Vietnamese text from `pleco_dict_entries`.
+`data/Pleco_OVD-Dict.pqb` is the default dictionary file committed with the project. Additional local `.pqb` files can be added to `data/` and will automatically be included by the TUI.
 
 `pqb_to_supabase.py` is a separate utility for importing Pleco dictionaries into Supabase. It is not required to run the TUI.
 
