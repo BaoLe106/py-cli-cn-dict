@@ -49,6 +49,7 @@ class SourceDatabase:
     path: Path
     connection: sqlite3.Connection
     name: str
+    language: str
 
 
 @dataclass
@@ -56,14 +57,24 @@ class MergedEntry:
     word: str
     altword: str
     pron: str
-    definitions: list[str] = field(default_factory=list)
+    english_definitions: list[str] = field(default_factory=list)
+    vietnamese_definitions: list[str] = field(default_factory=list)
+    other_definitions: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     uids: list[str] = field(default_factory=list)
     rank: int = 3
 
     @property
-    def definition_text(self) -> str:
-        return "\n\n".join(self.definitions)
+    def english_text(self) -> str:
+        return "\n\n".join(self.english_definitions)
+
+    @property
+    def vietnamese_text(self) -> str:
+        return "\n\n".join(self.vietnamese_definitions)
+
+    @property
+    def other_text(self) -> str:
+        return "\n\n".join(self.other_definitions)
 
     @property
     def source_text(self) -> str:
@@ -92,7 +103,10 @@ class DictionaryStore:
                 raise FileNotFoundError(f"Dictionary not found: {db_path}")
             connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             connection.row_factory = sqlite3.Row
-            self.sources.append(SourceDatabase(db_path, connection, self.source_name(connection, db_path)))
+            name = self.source_name(connection, db_path)
+            self.sources.append(
+                SourceDatabase(db_path, connection, name, self.source_language(name, db_path))
+            )
 
     def close(self) -> None:
         for source in self.sources:
@@ -115,6 +129,14 @@ class DictionaryStore:
             """
         ).fetchone()
         return clean_pleco_text(row["propvalue"]) if row else db_path.stem
+
+    def source_language(self, source_name: str, db_path: Path) -> str:
+        searchable = f"{source_name} {db_path.name}".lower()
+        if "ovd" in searchable or "vietnamese" in searchable:
+            return "vietnamese"
+        if "cd-dict" in searchable or "english" in searchable:
+            return "english"
+        return "other"
 
     def count_entries(self) -> int:
         return sum(
@@ -193,8 +215,7 @@ class DictionaryStore:
                     entry = MergedEntry(word=word, altword=altword, pron=pron, rank=rank)
                     merged[key] = entry
                 entry.rank = min(entry.rank, rank)
-                if definition and definition not in entry.definitions:
-                    entry.definitions.append(f"[{source.name}] {definition}")
+                self.add_definition(entry, source, definition)
                 if source.name not in entry.sources:
                     entry.sources.append(source.name)
                 uid = f"{source.name}:{row['uid']}"
@@ -205,6 +226,18 @@ class DictionaryStore:
             merged.values(),
             key=lambda entry: (entry.rank, len(entry.word), entry.word, entry.pron),
         )[: self.limit]
+
+    def add_definition(
+        self, entry: MergedEntry, source: SourceDatabase, definition: str
+    ) -> None:
+        if not definition:
+            return
+        target = {
+            "english": entry.english_definitions,
+            "vietnamese": entry.vietnamese_definitions,
+        }.get(source.language, entry.other_definitions)
+        if definition not in target:
+            target.append(definition)
 
     def rank_row(self, row: sqlite3.Row, variants: list[str]) -> int:
         word = row["word"] or ""
@@ -268,7 +301,16 @@ class DictSearchApp(App[None]):
     def on_mount(self) -> None:
         self.store.open()
         table = self.query_one(DataTable)
-        table.add_columns("Word", "Alt Word", "Pronunciation", "Definitions", "Sources", "UIDs")
+        table.add_columns(
+            "Word",
+            "Alt Word",
+            "Pronunciation",
+            "English",
+            "Vietnamese",
+            "Other",
+            "Sources",
+            "UIDs",
+        )
         count = self.store.count_entries()
         self.query_one("#status", Static).update(
             f"Ready. {count:,} entries loaded from {len(self.store.sources)} dictionaries."
@@ -303,7 +345,9 @@ class DictSearchApp(App[None]):
                 row.word,
                 row.altword,
                 row.pron,
-                row.definition_text,
+                row.english_text,
+                row.vietnamese_text,
+                row.other_text,
                 row.source_text,
                 row.uid_text,
                 key=f"{row.word}:{row.pron}",

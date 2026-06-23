@@ -2,7 +2,7 @@
 
 A terminal UI for searching Pleco `.pqb` dictionaries.
 
-The app uses Textual and searches every `.pqb` file in `data/` by default. You can type Chinese traditional or simplified characters, pinyin, English, or Vietnamese, and matching entries appear in one merged table.
+The app uses Textual and searches every `.pqb` file in `data/` by default. You can type Chinese traditional or simplified characters, pinyin, English, or Vietnamese, and matching entries appear in one merged table with separate English and Vietnamese definition columns.
 
 ## Structure
 
@@ -79,7 +79,7 @@ The default dictionary folder is:
 data/
 ```
 
-Every `.pqb` in that folder is queried. Results with the same word and pronunciation are merged into one table row, with definitions grouped by source dictionary.
+Every `.pqb` in that folder is queried. Results with the same word and pronunciation are merged into one table row. The Chinese-English dictionary is shown in the English column, and the Chinese-Vietnamese dictionary is shown in the Vietnamese column.
 
 The table displays:
 
@@ -87,7 +87,9 @@ The table displays:
 Word
 Alt Word
 Pronunciation
-Definitions
+English
+Vietnamese
+Other
 Sources
 UIDs
 ```
