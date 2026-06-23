@@ -1,0 +1,29 @@
+[project]
+name = "py-cli-cn-dict"
+version = "0.1.0"
+description = "Textual TUI for searching a Pleco Chinese-Vietnamese dictionary."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "opencc-python-reimplemented>=0.1.7",
+    "textual>=6.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.0",
+]
+
+[project.scripts]
+myclidict = "myclidict:main"
+
+[tool.setuptools]
+py-modules = ["myclidict"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,14 @@
+.agents/
+.codex/
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+.python-version
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+Pleco_CD-Dict-v4-286898w.pqb
